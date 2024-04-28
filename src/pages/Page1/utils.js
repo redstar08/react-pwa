@@ -8,7 +8,7 @@ export const createChunks = (file, { chunkSize = chunkSize } = {}) => {
   const size = file.size;
   const chunksList = [];
   for (let start = 0; start < size; start += chunkSize) {
-    const fileChunk = blobSlice.call(file, start, start + chunkSize);
+    const fileChunk = blobSlice.call(file, start, Math.min(size, start + chunkSize));
     chunksList.push(fileChunk);
   }
   return chunksList;
@@ -26,6 +26,7 @@ export const calculateHash = (chunksList) => {
       fileReader.onload = (e) => {
         const bytes = e.target.result;
         spark.append(bytes);
+        read(i + 1);
         if (i === chunksLen - 1) {
           resolve(spark.end());
         }
@@ -46,7 +47,6 @@ export const calculateHash = (chunksList) => {
       // }
 
       fileReader.readAsArrayBuffer(blob);
-      read(i + 1);
     };
     read(0);
   });

@@ -4,7 +4,7 @@ import type { UploadProps } from 'antd';
 import { message, Upload } from 'antd';
 
 import request from '@/api/request';
-import { chunkSize, createChunks, calculateHash } from './utils';
+import { chunkSize } from './utils';
 import { PromisePool } from './PromisePool';
 
 const { Dragger } = Upload;
@@ -35,58 +35,66 @@ const uploadChunks = async (
 };
 
 const uploadFile = async (file: File, onProgress?: (...args: any) => void) => {
-  try {
-    // 文件信息
-    const { name, size, type } = file;
-    // 文件分片
-    const chunksList = createChunks(file, { chunkSize });
-    // 计算 hash
-    const hash = await calculateHash(chunksList);
-    console.log('customRequest -> ', file, hash);
+  // 文件分片
+  const worker = new Worker(new URL('./md5.worker.js', import.meta.url), {
+    type: 'module',
+  });
+  worker.postMessage({ file });
+  // 计算 hash
+  worker.addEventListener('message', async ({ data }) => {
+    try {
+      // 文件信息
+      const { name, size, type } = file;
+      console.log('worker.addEventListener -> data', data);
+      const { hash, chunks } = data as { hash: string; chunks: Array<Blob> };
+      const fileInfo = {
+        name,
+        size,
+        type,
+        hash,
+        uid: (file as any).uid,
+      };
 
-    const fileInfo = {
-      name,
-      size,
-      type,
-      hash,
-      uid: (file as any).uid,
-    };
-
-    const { data } = await request('/verifyUpload', { data: { ...fileInfo, chunkSize } });
-    const { shouldUpload, existChunks } = data || {};
-
-    if (!shouldUpload) {
-      onProgress?.(file, data);
-      return message.info('秒传，已经上传过了');
-    }
-
-    // 构造 formData 对象
-    const chunksFormDataList = chunksList
-      .filter((chunk, index) => !existChunks.includes(`${hash}-${index}`))
-      .map((chunk, index) => {
-        const formData = new FormData();
-        formData.append('fileName', name);
-        formData.append('fileType', type);
-        formData.append('fileSize', size + '');
-        formData.append('fileHash', hash);
-        formData.append('chunk', chunk);
-        formData.append('chunkSize', chunk.size + '');
-        formData.append('chunkHash', `${hash}-${index}`);
-        formData.append('index', `${index}`);
-        return formData;
+      const { data: verifyInfo } = await request('/verifyUpload', {
+        data: { ...fileInfo, chunkSize },
       });
+      const { shouldUpload, existChunks } = verifyInfo || {};
 
-    // 等待切片上传
-    await uploadChunks(chunksFormDataList, file, onProgress);
+      if (!shouldUpload) {
+        onProgress?.(file, verifyInfo);
+        return message.info('秒传，已经上传过了');
+      }
 
-    // 合并切片
-    const results = await request('/merge', { data: { ...fileInfo, chunkSize } });
-    onProgress?.(file, { ...results.data, status: 'done' });
+      // 构造 formData 对象
+      const chunksFormDataList = chunks
+        .filter((chunk, index) => !existChunks.includes(`${hash}-${index}`))
+        .map((chunk, index) => {
+          const formData = new FormData();
+          formData.append('fileName', name);
+          formData.append('fileType', type);
+          formData.append('fileSize', size + '');
+          formData.append('fileHash', hash);
+          formData.append('chunk', chunk);
+          formData.append('chunkSize', chunk.size + '');
+          formData.append('chunkHash', `${hash}-${index}`);
+          formData.append('index', `${index}`);
+          return formData;
+        });
 
-    return fileInfo;
-  } catch (error) {
-    message.error('上传失败');
-  }
+      // 等待切片上传
+      await uploadChunks(chunksFormDataList, file, onProgress);
+
+      // 合并切片
+      const mergeInfo = await request('/merge', { data: { ...fileInfo, chunkSize } });
+      onProgress?.(file, { ...mergeInfo.data, status: 'done' });
+
+      return fileInfo;
+    } catch (error) {
+      message.error('上传失败');
+    } finally {
+      worker.terminate();
+    }
+  });
 };
 
 const Page1: React.FC = () => {
